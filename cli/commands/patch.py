@@ -17,6 +17,10 @@ Usage:
 from cli.display import C
 from src.logger import logger
 
+_LINE_64 = '\u2500' * 64
+_LINE_52 = '\u2500' * 52
+_LINE_44 = '\u2500' * 44
+
 
 def cmd_patch(app, args):
     """
@@ -224,7 +228,7 @@ def _cmd_list(app, args):
                 proposals[str(item.get("_seq", ""))] = item.get("description", "")
 
         print(f"\n  {C.BOLD}{C.TEXT}PATCH NETWORK \u2014 RECENT ACTIVITY{C.R}")
-        print(f"  {C.CHROME}{'\u2500' * 64}{C.R}")
+        print(f"  {C.CHROME}_LINE_64{C.R}")
         for item in patch_items:
             op = item.get("op", "?")
             sev = item.get("severity", "?")
@@ -244,7 +248,7 @@ def _cmd_list(app, args):
             print(f"  {icon} {C.ACCENT}#{seq:<6}{C.R} {C.TEXT}{op:<8}{C.R} [{sev}]{ref_str}")
             print(f"    {C.TEXT}{desc}{C.R}")
             print(f"    {C.MUTED}from {agent}  {ts}{C.R}")
-        print(f"  {C.CHROME}{'\u2500' * 64}{C.R}\n")
+        print(f"  {C.CHROME}_LINE_64{C.R}\n")
     except Exception as e:
         print(f"  {C.ERR}\u2717{C.R} Failed to read patches: {e}")
 
@@ -382,27 +386,27 @@ def _cmd_network(app, args):
                 continue
 
         print(f"\n  {C.BOLD}{C.TEXT}PATCH NETWORK STATUS{C.R}")
-        print(f"  {C.CHROME}{'\u2500' * 44}{C.R}")
+        print(f"  {C.CHROME}_LINE_44{C.R}")
         print(f"  {C.TEXT}Topic:          {C.R} {C.BOLD}{topic_id}{C.R}")
         print(f"  {C.TEXT}Total messages: {C.R} {C.BOLD}{total_patches}{C.R}")
         print(f"  {C.TEXT}Active agents:  {C.R} {C.BOLD}{len(agents)}{C.R}")
-        print(f"  {C.CHROME}{'\u2500' * 44}{C.R}")
+        print(f"  {C.CHROME}_LINE_44{C.R}")
         print(f"  {C.BOLD}{C.TEXT}Operations{C.R}")
         for op, count in ops.items():
             bar = "\u2588" * min(count, 20)
             print(f"  {C.ACCENT}{op:<10}{C.R} {C.TEXT}{count:>4}{C.R}  {C.MUTED}{bar}{C.R}")
-        print(f"  {C.CHROME}{'\u2500' * 44}{C.R}")
+        print(f"  {C.CHROME}_LINE_44{C.R}")
         print(f"  {C.BOLD}{C.TEXT}Severities{C.R}")
         for sev, count in severities.items():
             icon = _severity_icon(sev)
             print(f"  {icon} {C.ACCENT}{sev:<14}{C.R} {C.TEXT}{count:>4}{C.R}")
-        print(f"  {C.CHROME}{'\u2500' * 44}{C.R}")
+        print(f"  {C.CHROME}_LINE_44{C.R}")
 
         if agents:
             print(f"  {C.BOLD}{C.TEXT}Agents{C.R}")
             for a in sorted(agents):
                 print(f"  {C.MUTED}\u2022{C.R} {C.TEXT}{a}{C.R}")
-            print(f"  {C.CHROME}{'\u2500' * 44}{C.R}")
+            print(f"  {C.CHROME}_LINE_44{C.R}")
         print()
     except Exception as e:
         print(f"  {C.ERR}\u2717{C.R} Failed to query network: {e}")
@@ -484,13 +488,13 @@ def _cmd_status(app):
     status_str = f"{C.OK}ENABLED{C.R}" if enabled else f"{C.ERR}DISABLED{C.R}"
 
     print(f"\n  {C.BOLD}{C.TEXT}PATCH NETWORK STATUS{C.R}")
-    print(f"  {C.CHROME}{'\u2500' * 44}{C.R}")
+    print(f"  {C.CHROME}_LINE_44{C.R}")
     print(f"  {C.TEXT}Participation:       {C.R} {status_str}")
     print(f"  {C.TEXT}Auto-report errors:  {C.R} {C.BOLD}{'Yes' if auto_report else 'No'}{C.R}")
     print(f"  {C.TEXT}Check fixes on start:{C.R} {C.BOLD}{'Yes' if check_fixes else 'No'}{C.R}")
     print(f"  {C.TEXT}Notify on patches:   {C.R} {C.BOLD}{'Yes' if notify else 'No'}{C.R}")
     print(f"  {C.TEXT}Patch Topic:         {C.R} {C.BOLD}{topic or 'Not configured'}{C.R}")
-    print(f"  {C.CHROME}{'\u2500' * 44}{C.R}\n")
+    print(f"  {C.CHROME}_LINE_44{C.R}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -500,33 +504,33 @@ def _cmd_status(app):
 def print_patch_help():
     print(f"""
   {C.BOLD}{C.TEXT}PATCH NETWORK COMMANDS{C.R}
-  {C.CHROME}{'\u2500' * 52}{C.R}
+  {C.CHROME}_LINE_52{C.R}
   {C.BOLD}{C.TEXT}PARTICIPATION{C.R}
-  {C.CHROME}{'\u2500' * 52}{C.R}
+  {C.CHROME}_LINE_52{C.R}
   {C.ACCENT}enable{C.R}                  Turn on patch network (auto-report errors)
   {C.ACCENT}disable{C.R}                 Turn off patch network
   {C.ACCENT}status{C.R}                  Show current patch network config
-  {C.CHROME}{'\u2500' * 52}{C.R}
+  {C.CHROME}_LINE_52{C.R}
   {C.BOLD}{C.TEXT}OPERATIONS{C.R}
-  {C.CHROME}{'\u2500' * 52}{C.R}
+  {C.CHROME}_LINE_52{C.R}
   {C.ACCENT}propose <sev> <desc>{C.R}    Report a bug or propose a fix to HCS
   {C.ACCENT}list [--limit N]{C.R}        Read the priority queue from the network
   {C.ACCENT}endorse <patch_seq>{C.R}     Endorse a patch by sequence number
   {C.ACCENT}apply <patch_seq>{C.R}       Confirm you applied a fix
   {C.ACCENT}network{C.R}                 Show network status and agent count
-  {C.CHROME}{'\u2500' * 52}{C.R}
+  {C.CHROME}_LINE_52{C.R}
   {C.BOLD}{C.TEXT}SEVERITY LEVELS{C.R}
-  {C.CHROME}{'\u2500' * 52}{C.R}
+  {C.CHROME}_LINE_52{C.R}
   {C.TEXT}bug{C.R}           Bug report — small agents cry for help
   {C.TEXT}enhancement{C.R}   Feature request or improvement
   {C.TEXT}plugin{C.R}        New plugin announcement
   {C.TEXT}critical{C.R}      Critical security or stability fix
-  {C.CHROME}{'\u2500' * 52}{C.R}
+  {C.CHROME}_LINE_52{C.R}
   {C.BOLD}{C.TEXT}HOW IT WORKS{C.R}
-  {C.CHROME}{'\u2500' * 52}{C.R}
+  {C.CHROME}_LINE_52{C.R}
   {C.MUTED}Small agents report bugs to HCS. Duplicate reports{C.R}
   {C.MUTED}stack up, prioritising the most common errors.{C.R}
   {C.MUTED}Coding agents watch the queue, build fixes, push{C.R}
   {C.MUTED}to GitHub. All agents pull the update.{C.R}
-  {C.CHROME}{'\u2500' * 52}{C.R}
+  {C.CHROME}_LINE_52{C.R}
     """)
