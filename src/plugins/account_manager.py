@@ -1,0 +1,364 @@
+"""
+Pacman Account Manager Plugin
+=============================
+
+Standalone module for native Hedera account operations using hiero-sdk-python.
+Features:
+- New Account Creation (funded by existing account)
+- Sub-account Creation (same key, funded by parent)
+"""
+
+import os
+from typing import Optional, Tuple
+
+# Hedera SDK imports — optional dependency. Account creation/management
+# requires it, but basic operations (get_known_accounts, etc.) work without.
+try:
+    from hiero_sdk_python.client.client import Client
+    from hiero_sdk_python.account.account_create_transaction import AccountCreateTransaction
+    from hiero_sdk_python.account.account_id import AccountId
+    from hiero_sdk_python.tokens.token_associate_transaction import TokenAssociateTransaction
+    from hiero_sdk_python.crypto.private_key import PrivateKey
+    from hiero_sdk_python.hbar import Hbar
+    _HAS_HIERO_SDK = True
+except ImportError:
+    _HAS_HIERO_SDK = False
+
+class AccountManager:
+    """
+    Handles native Hedera account creation and management.
+    """
+    # Standard Purpose Mapping for automated labeling and configuration
+    PURPOSE_MAP = {
+        "rebalancer": "Bitcoin Rebalancer Daemon",
+        "main": "Main Transaction Account",
+        "gas": "Gas Source",
+        "backup": "Backup Signer"
+    }
+
+    def __init__(self, network: str = "mainnet"):
+        self.network = network.lower()
+        self.client = self._init_client() if _HAS_HIERO_SDK else None
+
+    def _init_client(self) -> "Client":
+        """Initialize Hiero SDK Client."""
+        if self.network == "mainnet":
+            return Client.for_mainnet()
+        else:
+            return Client.for_testnet()
+
+    def _require_sdk(self):
+        """Raise clear error if SDK-dependent operation is called without the package."""
+        if not _HAS_HIERO_SDK:
+            raise RuntimeError("hiero-sdk-python is required for this operation. Install with: pip install hiero-sdk-python")
+
+    def set_operator(self, account_id: str, private_key: str):
+        """Set the account that pays for transaction fees."""
+        self._require_sdk()
+        # Clean private key
+        clean_key = private_key.replace("0x", "")
+        
+        # Explicitly use ECDSA for this wallet to avoid SDK ambiguity (Ed25519 vs ECDSA)
+        try:
+             # If it's a 32-byte hex, we force ECDSA interpretation
+             key_bytes = bytes.fromhex(clean_key)
+             if len(key_bytes) == 32:
+                 pk = PrivateKey.from_bytes_ecdsa(key_bytes)
+             else:
+                 pk = PrivateKey.from_string(clean_key)
+        except Exception:
+             pk = PrivateKey.from_string(clean_key)
+
+        self.client.set_operator(
+            AccountId.from_string(account_id),
+            pk
+        )
+        self.operator_id = account_id
+        self._operator_raw_key = clean_key # Cache raw key securely (internal only)
+
+    def get_known_accounts(self) -> list:
+        """Get the list of known account IDs from the local registry."""
+        import json
+        from pathlib import Path
+        
+        accounts_path = Path("data/accounts.json")
+        if not accounts_path.exists():
+            return []
+            
+        try:
+            with open(accounts_path) as f:
+                return json.load(f)
+        except Exception:
+            return []
+
+    def _save_account(self, account_id: str, type: str = "imported", nickname: str = "", purpose: Optional[str] = None, evm_alias: Optional[str] = None):
+        """Save an account ID to the local registry."""
+        import json
+        from pathlib import Path
+        import time
+        from src.logger import logger
+
+        # Resolve nickname from purpose if provided
+        if purpose and purpose in self.PURPOSE_MAP:
+            nickname = self.PURPOSE_MAP[purpose]
+
+        # Label account based on purpose
+        if purpose == "rebalancer":
+            nickname = "Bitcoin Rebalancer Daemon"
+
+        accounts_path = Path("data/accounts.json")
+        accounts = self.get_known_accounts()
+
+        # Check if already exists — update nickname/evm_alias if provided
+        for a in accounts:
+            if a.get("id") == account_id:
+                changed = False
+                if nickname and a.get("nickname") != nickname:
+                    a["nickname"] = nickname
+                    changed = True
+                if evm_alias and not a.get("evm_alias"):
+                    a["evm_alias"] = evm_alias
+                    changed = True
+                if changed:
+                    try:
+                        with open(accounts_path, "w") as f:
+                            json.dump(accounts, f, indent=4)
+                    except Exception as e:
+                        logger.error(f"Failed to update account: {e}")
+                return
+
+        entry = {
+            "id": account_id,
+            "type": type,
+            "nickname": nickname,
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+
+        # Auto-populate EVM alias if we have the private key (critical for token transfers)
+        if evm_alias:
+            entry["evm_alias"] = evm_alias
+
+        accounts.append(entry)
+
+        try:
+            accounts_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(accounts_path, "w") as f:
+                json.dump(accounts, f, indent=4)
+            logger.info(f"Saved account {account_id} ('{nickname}') to registry.")
+        except Exception as e:
+            logger.error(f"Failed to save account to registry: {e}")
+
+    def create_account(self, 
+                       initial_balance_hbar: float = 1.0, 
+                       alias_key: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Create a new Hedera account. Requires hiero-sdk-python.
+        If alias_key is provided, it creates a sub-account using that key.
+        Otherwise, it generates a new key pair.
+
+        Returns: (account_id, private_key)
+        """
+        self._require_sdk()
+        is_sub_account = (alias_key is not None)
+
+        try:
+            # 1. Prepare Key
+            if is_sub_account:
+                # Force ECDSA for sub-accounts too
+                clean_alias = alias_key.replace("0x", "")
+                key_bytes = bytes.fromhex(clean_alias)
+                if len(key_bytes) == 32:
+                    new_key = PrivateKey.from_bytes_ecdsa(key_bytes)
+                else:
+                    new_key = PrivateKey.from_string(clean_alias)
+            else:
+                new_key = PrivateKey.generate_ecdsa()
+
+            # 2. Construct Transaction
+            # Note: initial_balance is sent from the operator account
+            tx = AccountCreateTransaction() \
+                .set_key(new_key.public_key()) \
+                .set_initial_balance(Hbar.from_hbars(initial_balance_hbar)) \
+                .set_max_automatic_token_associations(-1) \
+                .set_account_memo("Pacman Created Account")
+
+            # Set EVM Alias for ECDSA keys to ensure wallet compatibility (HashPack/Metamask)
+            if new_key.public_key().is_ecdsa():
+                evm_address = new_key.public_key().to_evm_address()
+                tx.set_alias(evm_address)
+
+            # 3. Execute
+            tx.freeze_with(self.client)
+            response = tx.execute(self.client)
+            
+            # Handle potential difference in SDK return types (Proven pattern from staking.py)
+            if hasattr(response, "get_receipt"):
+                receipt = response.get_receipt(self.client)
+            else:
+                # Assume it's already a receipt
+                receipt = response
+            
+            if not receipt.account_id:
+                print(f"   ❌ Account creation returned no ID. Network may be congested.")
+                return None, None
+                
+            new_id = str(receipt.account_id)
+            if new_id == "None":
+                print(f"   ❌ Network returned string 'None' as ID.")
+                return None, None
+                
+            return new_id, (None if is_sub_account else new_key.to_string())
+
+        except Exception as e:
+            # Strip potential key data from error messages for security
+            err_msg = str(e)
+            if "hex" in err_msg.lower() or "string" in err_msg.lower():
+                err_msg = "Invalid key format or permission error."
+            print(f"   ❌ Account creation failed: {err_msg}")
+            return None, None
+
+    def create_sub_account(self, initial_balance_hbar: float = 1.0, nickname: str = "", purpose: Optional[str] = None) -> Optional[str]:
+        """
+        Create a new Account ID using the current operator's Private Key.
+        Automatically saves to the local registry with an optional nickname or purpose.
+        """
+        if not hasattr(self, "_operator_raw_key") or not self._operator_raw_key:
+            raise RuntimeError("Operator key not set. Call set_operator() first.")
+
+        new_id, _ = self.create_account(
+            initial_balance_hbar=initial_balance_hbar,
+            alias_key=self._operator_raw_key
+        )
+
+        if new_id:
+            self._save_account(new_id, type="derived", nickname=nickname, purpose=purpose)
+
+        return new_id
+
+    def rename_account(self, account_id: str, nickname: str) -> bool:
+        """
+        Update the nickname for an existing account in the local registry.
+        Returns True if found and updated, False if not found.
+        """
+        import json
+        from pathlib import Path
+        from src.logger import logger
+
+        accounts_path = Path("data/accounts.json")
+        accounts = self.get_known_accounts()
+
+        updated = False
+        for a in accounts:
+            if a.get("id") == account_id:
+                a["nickname"] = nickname
+                updated = True
+                break
+
+        if not updated:
+            return False
+
+        try:
+            with open(accounts_path, "w") as f:
+                json.dump(accounts, f, indent=4)
+            logger.info(f"Updated nickname for {account_id} to '{nickname}'.")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to rename account: {e}")
+            return False
+    def associate_token(self, token_id: str) -> bool:
+        """
+        Associate a token with the current operator account.
+        """
+        self._require_sdk()
+        try:
+            from hiero_sdk_python.tokens.token_id import TokenId
+            
+            tx = TokenAssociateTransaction() \
+                .set_account_id(AccountId.from_string(self.operator_id)) \
+                .set_token_ids([TokenId.from_string(token_id)])
+            
+            tx.freeze_with(self.client)
+            response = tx.execute(self.client)
+            
+            if hasattr(response, "get_receipt"):
+                receipt = response.get_receipt(self.client)
+            else:
+                receipt = response
+                
+            return receipt.status == 22 # SUCCESS in most SDK versions, but let's check properly
+        except Exception as e:
+            from src.logger import logger
+            logger.error(f"Token association failed for {token_id}: {e}")
+            return False
+
+    def auto_associate_base_tokens(self) -> dict:
+        """
+        Batch-associate the base token set defined in data/base_tokens.json.
+        Skips already-associated tokens. Returns a summary dict.
+        """
+        import json, time
+        from pathlib import Path
+        from src.logger import logger
+
+        result = {"associated": [], "already_associated": [], "failed": []}
+
+        base_path = Path(__file__).resolve().parent.parent.parent / "data" / "base_tokens.json"
+        template_path = base_path.parent / "base_tokens.template.json"
+
+        # Auto-copy template if the .json doesn't exist yet
+        if not base_path.exists() and template_path.exists():
+            import shutil
+            shutil.copy2(template_path, base_path)
+            logger.info("[AutoAssoc] Copied base_tokens.template.json → base_tokens.json")
+
+        if not base_path.exists():
+            logger.error("[AutoAssoc] data/base_tokens.json not found — skipping")
+            return result
+
+        try:
+            with open(base_path) as f:
+                data = json.load(f)
+            tokens = data.get("tokens", [])
+        except Exception as e:
+            logger.error(f"[AutoAssoc] Failed to read base_tokens.json: {e}")
+            return result
+
+        for entry in tokens:
+            token_id = entry.get("id")
+            symbol = entry.get("symbol", token_id)
+
+            if not token_id:
+                continue
+
+            # HBAR and WHBAR are native — never need association
+            if token_id in ("0.0.0", "0.0.1456986"):
+                continue
+
+            # Check if already associated via Mirror Node to avoid wasting HBAR on gas.
+            # Note: We use Mirror Node directly here because AccountManager doesn't
+            # have a web3/SaucerSwap client — it uses the Hiero SDK for transactions.
+            already = False
+            try:
+                import requests as _requests
+                _mirror_base = "https://mainnet.mirrornode.hedera.com" if self.network == "mainnet" else "https://testnet.mirrornode.hedera.com"
+                _mirror_url = f"{_mirror_base}/api/v1/accounts/{self.operator_id}/tokens"
+                _resp = _requests.get(_mirror_url, params={"token.id": token_id, "limit": 1}, timeout=5)
+                if _resp.status_code == 200:
+                    _tokens_found = _resp.json().get("tokens", [])
+                    already = len(_tokens_found) > 0
+            except Exception:
+                pass  # If check fails, proceed with association attempt
+
+            if already:
+                result["already_associated"].append((symbol, token_id))
+                continue
+
+            logger.info(f"[AutoAssoc] Associating {symbol} ({token_id})...")
+            ok = self.associate_token(token_id)
+            if ok:
+                result["associated"].append((symbol, token_id))
+                time.sleep(0.5)  # Brief delay to avoid rate-limiting
+            else:
+                result["failed"].append((symbol, token_id, "association failed"))
+
+        return result

@@ -1,0 +1,160 @@
+import os
+import sys
+import pytest
+from pathlib import Path
+from unittest.mock import patch, mock_open
+
+# Add project root to sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.config import PacmanConfig, SecureString
+from src.errors import ConfigurationError
+
+class TestPacmanConfig:
+
+    @patch("pathlib.Path.exists")
+    @patch.dict(os.environ, {}, clear=True)
+    def test_from_env_defaults(self, mock_exists):
+        """Test loading default values when no env vars are set."""
+        mock_exists.return_value = False
+
+        config = PacmanConfig.from_env()
+
+        assert config.network == "mainnet"
+        assert config.rpc_url == "https://mainnet.hashio.io/api"
+        # Swap/daily limits come from governance.json; dataclass defaults are 100.00
+        assert config.max_swap_amount_usd == 100.00
+        assert config.max_daily_volume_usd == 100.00
+        assert config.max_slippage_percent == 2.0
+        assert config.simulate_mode is False
+        assert config.require_confirmation is True
+        assert config.verbose_mode is False
+        assert config.private_key is None
+        assert config.hedera_account_id is None
+
+    @patch("pathlib.Path.exists")
+    @patch.dict(os.environ, {
+        "PACMAN_NETWORK": "testnet",
+        "PACMAN_MAX_SLIPPAGE": "2.0",
+        "PACMAN_SIMULATE": "false",
+        "PACMAN_CONFIRM": "false",
+        "PACMAN_VERBOSE": "true",
+        "HEDERA_ACCOUNT_ID": "0.0.123"
+    }, clear=True)
+    def test_from_env_overrides(self, mock_exists):
+        """Test loading values from environment variables."""
+        mock_exists.return_value = False
+
+        config = PacmanConfig.from_env()
+
+        assert config.network == "testnet"
+        assert config.rpc_url == "https://testnet.hashio.io/api"
+        assert config.max_slippage_percent == 2.0
+        assert config.simulate_mode is False
+        assert config.require_confirmation is False
+        assert config.verbose_mode is True
+        assert config.hedera_account_id == "0.0.123"
+
+    @patch("pathlib.Path.exists")
+    @patch.dict(os.environ, {
+        "PACMAN_MAX_SLIPPAGE": "10.0"
+    }, clear=True)
+    def test_from_env_slippage_cap(self, mock_exists):
+        """Test that the 5% slippage hard cap is enforced."""
+        mock_exists.return_value = False
+
+        config = PacmanConfig.from_env()
+
+        assert config.max_slippage_percent == 5.0
+
+    def test_safe_float(self):
+        """Test the _safe_float static method."""
+        # Valid floats
+        assert PacmanConfig._safe_float("1.23", 0.0) == 1.23
+        assert PacmanConfig._safe_float("0", 1.0) == 0.0
+
+        # Invalid inputs
+        assert PacmanConfig._safe_float(None, 5.0) == 5.0
+        assert PacmanConfig._safe_float("not a float", 5.0) == 5.0
+        assert PacmanConfig._safe_float("nan", 5.0) == 5.0
+        assert PacmanConfig._safe_float("inf", 5.0) == 5.0
+        assert PacmanConfig._safe_float("-inf", 5.0) == 5.0
+
+    def test_validate_success(self):
+        """Test validate method with a valid configuration."""
+        config = PacmanConfig(
+            private_key=SecureString("a" * 64),
+            simulate_mode=False,
+            max_swap_amount_usd=100.0,
+            max_daily_volume_usd=100.0,
+            max_slippage_percent=2.0
+        )
+        # Should not raise
+        config.validate()
+
+    def test_validate_simulate_mode_no_key(self):
+        """Test validate method in simulation mode with no key (should pass)."""
+        config = PacmanConfig(private_key=None, simulate_mode=True)
+        # Should not raise
+        config.validate()
+
+    def test_validate_live_mode_no_key(self):
+        """Test validate method in live mode with no key."""
+        config = PacmanConfig(private_key=None, simulate_mode=False)
+        with pytest.raises(ConfigurationError, match="Private key required"):
+            config.validate()
+
+    def test_validate_invalid_key_length(self):
+        """Test validate method with invalid private key length."""
+        config = PacmanConfig(private_key=SecureString("abc"), simulate_mode=False)
+        with pytest.raises(ConfigurationError, match="Invalid private key format"):
+            config.validate()
+
+        config.private_key = SecureString("a" * 63)
+        with pytest.raises(ConfigurationError, match="Invalid private key format"):
+            config.validate()
+
+    def test_validate_invalid_key_chars(self):
+        """Test validate method with non-hex characters in private key."""
+        config = PacmanConfig(private_key=SecureString("z" * 64), simulate_mode=False)
+        with pytest.raises(ConfigurationError, match="non-hex characters"):
+            config.validate()
+
+    def test_validate_invalid_limits(self):
+        """Test validate method with invalid limits."""
+        # Max swap negative — needs a valid key so validation gets past key check
+        config = PacmanConfig(private_key=SecureString("a" * 64), max_swap_amount_usd=-0.1)
+        with pytest.raises(ConfigurationError, match="Invalid max_swap_amount_usd"):
+            config.validate()
+
+        # Max daily negative
+        config = PacmanConfig(private_key=SecureString("a" * 64), max_daily_volume_usd=-1.0)
+        with pytest.raises(ConfigurationError, match="Invalid max_daily_volume_usd"):
+            config.validate()
+
+        # Max slippage too high (5% hard cap stays)
+        config = PacmanConfig(private_key=SecureString("a" * 64), max_slippage_percent=5.1)
+        with pytest.raises(ConfigurationError, match="Invalid max_slippage_percent"):
+            config.validate()
+
+        # NaN limits
+        config = PacmanConfig(private_key=SecureString("a" * 64), max_swap_amount_usd=float('nan'))
+        with pytest.raises(ConfigurationError, match="Invalid max_swap_amount_usd"):
+            config.validate()
+
+    @patch("pathlib.Path.exists")
+    @patch("builtins.open", new_callable=mock_open, read_data="TEST_KEY=test_value\n#Comment\nINVALID LINE\n")
+    @patch.dict(os.environ, {}, clear=True)
+    def test_from_env_dot_env_loading(self, mock_file, mock_exists):
+        """Test loading from .env file."""
+        mock_exists.return_value = True
+
+        # from_env manually parses .env
+        config = PacmanConfig.from_env()
+
+        assert os.environ.get("TEST_KEY") == "test_value"
+        # Verify it doesn't override existing env vars
+        with patch.dict(os.environ, {"EXISTING": "old"}):
+            with patch("builtins.open", mock_open(read_data="EXISTING=new")):
+                PacmanConfig.from_env()
+                assert os.environ["EXISTING"] == "old"

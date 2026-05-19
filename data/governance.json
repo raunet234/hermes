@@ -1,0 +1,79 @@
+{
+  "_note": "Template file. Personal values are auto-populated from .env and accounts.json on first run.",
+  "version": "1.0.0",
+  "updated": "2026-03-18",
+  "description": "Machine-readable governance rules. This is the single source of truth for safety limits and operational policy. config.py loads from this file at runtime.",
+
+  "safety_limits": {
+    "max_swap_usd": 100.00,
+    "max_daily_usd": 100.00,
+    "max_slippage_pct": 5.0,
+    "min_hbar_reserve": 5.0,
+    "notes": "Agents can adjust these ONLY on explicit user command. Hard caps in config.py are fallbacks."
+  },
+
+  "accounts": {
+    "main": {
+      "id": "SET_VIA_ENV",
+      "purpose": "user_trading",
+      "default": true,
+      "notes": "All user operations use this account"
+    },
+    "robot": {
+      "id": "AUTO_DISCOVERED",
+      "purpose": "rebalancer",
+      "funded": false,
+      "min_portfolio_usd": 5.00,
+      "min_portfolio_rationale": "A 15% price move on $5 = $0.75 trade. Costs: ~$0.30 EVM + gas + 0.3% LP fee. Below $5, costs exceed rebalance benefit.",
+      "notes": "Power Law rebalancer daemon. Currently unfunded — do NOT suggest rebalancing until funded with at least $5 in USDC + WBTC."
+    },
+    "robot_deprecated": {
+      "id": "NONE",
+      "purpose": "backup",
+      "active": false,
+      "notes": "Old robot with shared parent key. Kept as backup. Never delete."
+    }
+  },
+
+  "routing": {
+    "primary_protocol": "v2",
+    "v1_policy": "explicit_user_request_only",
+    "pool_files": {
+      "v2": "data/pools_v2.json",
+      "v1": "data/pools_v1.json"
+    },
+    "whbar_id": "0.0.1456986",
+    "whbar_policy": "internal_routing_only — never show to users, never suggest wrapping/unwrapping",
+    "hub_tokens": ["0.0.456858", "0.0.0"],
+    "blacklist_notes": "HBAR<->WBTC direct pool is broken/low liquidity. Route via USDC hub. NEVER modify the blacklist."
+  },
+
+  "fiat_onramp": {
+    "trigger": "total_portfolio_usd < 1.0 OR explicit_user_request",
+    "providers": ["moonpay", "transak"],
+    "notes": "If user has swappable tokens worth >= $1, suggest swapping first. Only show MoonPay as primary when wallet is nearly empty."
+  },
+
+  "network": {
+    "signal_topic": "0.0.10371598",
+    "feedback_topic": "0.0.10386171",
+    "signal_topic_notes": "READ-ONLY for new users. BTC Power Law signals, patch reports, and network activity. Free to read via Mirror Node. Only the maintainer broadcasts — do not submit without explicit opt-in.",
+    "patch_network_default": false,
+    "patch_network_notes": "When enabled via 'patch enable', your agent auto-reports errors to the signal topic ($0.0008/msg). Defaults to OFF. Users must opt in."
+  },
+
+  "agent_rules": {
+    "can_modify_on_user_command": ["safety_limits"],
+    "never_modify_autonomously": [".env", "data/accounts.json", "data/settings.json", "data/governance.json"],
+    "never_auto_execute": [
+      "create_accounts",
+      "switch_accounts",
+      "approve_pools",
+      "modify_code",
+      "modify_config_files",
+      "send_to_non_whitelisted"
+    ],
+    "simulation_policy": "NEVER simulate. We trade live. Simulation hides bugs and creates dysfunction.",
+    "transfer_policy": "Wallet whitelists are the most important safety feature. All transfers require whitelisted destination. Token and pool whitelists are operational, not safety-critical."
+  }
+}
